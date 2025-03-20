@@ -1,0 +1,33 @@
+# playbook/sections/prep_server.yaml
+---
+- name: Update /etc/hosts on localhost
+  connection: local
+  become: true
+  blockinfile:
+    path: /etc/hosts
+    block: |
+      {{ ansible_default_ipv4.address }} {{ common.hostname }}
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- k3d network setup"
+
+- name: Update /etc/hosts on localhost
+  become: true
+  blockinfile:
+    path: /etc/hosts
+    block: |
+      127.0.0.1 {{ common.hostname }}
+    marker: "# {mark} ANSIBLE MANAGED BLOCK -- k3d network setup"
+
+- name: Ensure required packages are installed
+  ansible.builtin.package:
+    name:
+      - iptables
+      - curl
+    state: present
+
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_set: true
+    reload: true

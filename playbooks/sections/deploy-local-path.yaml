@@ -1,0 +1,48 @@
+# playbook/sections/deploy-local-path.yaml
+---
+- name: Delete default operator
+  connection: local
+  kubernetes.core.k8s:
+    kubeconfig: ~/.kube/config
+    state: absent
+    api_version: v1
+    kind: Deployment
+    namespace: kube-system
+    name: local-path-provisioner
+
+- name: Delete default storageclass
+  connection: local
+  kubernetes.core.k8s:
+    kubeconfig: ~/.kube/config
+    state: absent
+    api_version: v1
+    kind: StorageClass
+    name: local-path
+
+- name: Apply namespace first
+  connection: local
+  kubernetes.core.k8s:
+    kubeconfig: ~/.kube/config
+    state: present
+    src: "/home/still/Projects/k3d-lab/local_storage/00-namespace.yaml"
+  when: local_namespace_applied is not defined
+  register: local_namespace_applied
+
+- name: Find all Kubernetes manifest files in the directory (local-storage-operator)
+  connection: local
+  find:
+    paths: "/home/still/Projects/k3d-lab/local_storage"
+    patterns: "*.yaml"
+    recurse: no
+  register: local_manifest_files
+
+- name: Create a Deployment by reading the definition from a local file (local-storage-operator)
+  connection: local
+  kubernetes.core.k8s:
+    kubeconfig: ~/.kube/config
+    state: present
+    src: "{{ item.path }}"
+  with_items: "{{ local_manifest_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: item.path != "~/Projects/k3d-lab/local_storage/00-namespace.yaml"

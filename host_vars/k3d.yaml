@@ -1,0 +1,88 @@
+common:
+  hostname: studystation.local                   # name of server
+  clustername: my-home                           # name of your cluster
+# The architecture map used to set the correct name according to the
+# repository file names.
+  k3d_architecture_map:
+    {
+    "aarch": "arm64",
+    "aarch64": "arm64",
+    "amd64": "amd64",
+    "arm64": "arm64",
+    "armhf": "armhf",
+    "armv7l": "armhf",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+    "x86_64": "amd64",
+    }
+k3d:
+  k3d_os: "linux"                       # type of installation
+  k3d_version: "latest"                 # The version of the binary. Example: "5.4.6". Usually used 'latest'
+  k3d_owner: "root"                     # The owner of the installed binary.
+  k3d_group: "root"                     # The group of the installed binary.
+  k3d_mode: 0755                        # The permissions of the installed binary.
+  k3d_bin_dir_mode: 0755                # The permissions of the binary directory.
+  k3d_bin_dir: "/usr/local/share/k3d"   # The directory to install the binary in.
+  k3d_bin_path: "{{ k3d_bin_dir }}/k3d" # The full path to the binary..
+  k3d_link_path: "/usr/local/bin/k3d"   # The symlink path created to the binary
+  k3d_repo_url: "https://github.com/k3d-io/k3d"
+                                        # The URL to the repository.
+  k3d_file_url: "{{ k3d_repo_url }}/releases/download/v{{ k3d_version }}/k3d-{{ k3d_os }}-{{ k3d_architecture }}"
+                                        # The URL to the file.
+  k3d_version_url: "https://api.github.com/repos/k3d-io/k3d/releases/latest"
+                                        # The URL to fetch the latest version from.
+  k3d_architecture: "{{ common.k3d_architecture_map[ansible_architecture] }}"
+                                        # The architecture target for the binary. To avoid recursion. use `common.k3d_architecture_map` key
+  config_path: "/tmp/k3d-config.yaml"        # path to generated config on server
+  cluster_name: "{{ common.clustername }}"       # string for naming your cluster. Nested from common.clustername
+  server_count: 1                                # number of servers for control plane
+  agent_count: 2                                 # number of nodes for workloads
+  hostname: "{{ common.hostname}}"               # to avoid recursion. use `common.hostname` key
+  hostport: 6443                                 # port for control plane
+  network_name: string                           # name of docker network for cluster
+  volumes:
+    - path: /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
+      nodefilters:
+        - server:0
+        - agent:*
+    - path: /media/nfs/:/var/lib/rancher/k3s/storage
+      nodefilters:
+        - all
+    # path: ""                                   # path:path - volumes to mount in the k3d cluster
+    # nodefilters:                               # selector on wich nodes this path should be mounted
+    #  - server:0                                # Example: mount on first server in control plane
+    #  - agent:*                                 # Example: mount on all workload nodes
+  cnames:                                        # list of hostnames which will be exported to /etc/hosts on all nodes in cluster
+    - "{{ common.hostname }}"                    # Example: insert hostname of server itself
+    - "registry.{{ common.clustername }}.local"  # Example: Generate cname for registry
+  ports:                                         # List of ports to expose in the k3d cluster
+    - port: 80:80
+      nodefilters:
+       - loadbalancer
+    - port: 443:443
+      nodefilters:
+       - loadbalancer
+    - port: "30053:53"
+      nodefilters:
+       - server:0
+       - agent:*
+    # port: 80:80                                # port:port - mapping for ports to be mapped
+    # nodefilters:                               # selector on wich nodes this ports will be mapped
+    #   - loadbalancer                           # Example: same as all nodes
+  rancher_version: "v1.32.2-k3s1"                # Version of k3s to used in deployment
+  recreate: true                                 # Conditional parameter - recreate or not existing cluster. I set this to ensure a fresh cluster for each deployment.
+  registry:
+    user: still                                  # String for login to local registry in cluster. Default to "admin".
+    pass: weare                                  # string for password to registry. Default to "secret".
+cert:
+  country_name: "RS"                                  # Country for certificate subject
+  state_or_province_name: "Belgrade"                  # State or province for certificate subject
+  locality_name: "Belgrade-Zvezdara"                  # Locality for certificate subject
+  organization_name: "Stepan Illichevskii PR Beograd" # Organization name
+  organizational_unit_name: "IT Department"           # Organizational unit
+  common_name: "{{ common.clustername }}.local"       # Common name for CA cert
+  email_address: "still.ru@gmail.com"                 # Email for certificate
+  ca_name: "my-organization-ca"                       # Name of the Certificate Authority
+  password: "MySecurePassword123!"                    # Password for securing the CA's private key and sensitive data
+  step_ca_namespace: "step-ca"                        # Kubernetes namespace where the Step CA will be deployed
+  step_ca_service_name: "step-ca-certificates"        # Name of the Kubernetes service for the Step CA

@@ -1,0 +1,77 @@
+# ./templates/k3d-config.yml.j2
+---
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: {{ k3d.cluster_name }}
+servers: {{ k3d.server_count }}
+agents: {{ k3d.agent_count }}
+kubeAPI:
+  host: "{{ k3d.hostname }}"
+  hostIP: "0.0.0.0"
+  hostPort: "{{ k3d.hostport }}"
+image: rancher/k3s:{{ k3d.rancher_version }}
+network: "{{ k3d.network_name }}"
+volumes:
+{% for item in k3d.volumes %}
+  - volume: {{ item.path }}
+{% if item.nodefilters is defined and item.nodefilters %}
+    nodeFilters:
+{% for filter in item.nodefilters %}
+      - {{ filter }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+hostAliases:
+  - ip: {{ ansible_default_ipv4.address }}
+    hostnames:
+{% for item in k3d.cnames %}
+      - {{ item }}
+{% endfor %}
+ports:
+{% for port_config in k3d.ports %}
+  - port: {{ port_config.port }}
+    nodeFilters:
+{% for filter in port_config.nodefilters %}
+     - {{ filter }}
+{% endfor %}
+{% endfor %}
+registries:
+  create:
+    name: registry.{{ k3d.cluster_name }}.local
+    host: "0.0.0.0"
+    hostPort: "5000"
+    volumes:
+      - /media/nfs/registry:/var/lib/registry
+  config: |
+    mirrors:
+      "registry.homelab.local":
+        endpoint:
+          - http://k3d-registry.homelab.local:5000
+    configs:
+      "registry.{{ common.clustername }}.local":
+        auth:
+          username: "{{ k3d.registry.user | default('admin') }}"
+          password: "{{ k3d.registry.pass | default('secret') }}"
+options:
+  k3d:
+    wait: true
+    timeout: "300s"
+    #loadbalancer:
+    #  configOverrides:
+    #  - settings.workerConnections=2048
+    disableLoadbalancer: false
+  k3s:
+    extraArgs:
+      - arg: --tls-san={{ k3d.cnames[0] }}
+        nodeFilters:
+          - server:*
+      - arg: --tls-san={{ ansible_default_ipv4.address }}
+        nodeFilters:
+          - server:*
+      - arg: --kubelet-arg=node-status-update-frequency=4s
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

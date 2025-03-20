@@ -1,0 +1,171 @@
+# playbooks/sections/deploy-step-ca.yaml
+---
+- name: Add smallstep chart repo
+  kubernetes.core.helm_repository:
+    name: smallstep
+    repo_url: "https://smallstep.github.io/helm-charts"
+
+- name: Generate step ca config from template
+  connection: local
+  ansible.builtin.template:
+    src: ../../templates/smallstep-values,yaml.j2
+    dest: /tmp/smallstep-values.yaml
+
+- name: Deploy Step-ca
+  kubernetes.core.helm:
+    name: step-ca
+    chart_ref: smallstep/step-certificates
+    release_namespace: step-ca
+    create_namespace: true
+    wait: true
+    update_repo_cache: True
+    values: "{{ lookup('file', '/tmp/smallstep-values.yaml') | from_yaml }}"
+
+- name: Update step-ca-step-certificates-config ConfigMap with ACME provisioner
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: step-ca-step-certificates-config
+        namespace: "{{ cert.step_ca_namespace }}"
+      data:
+        ca.json: "{{ ca_config | to_json }}"
+  vars:
+    ca_config:
+      address: ":9000"
+      dnsNames:
+        - "{{ cert.step_ca_service_name }}.{{ cert.step_ca_namespace }}.svc.cluster.local"
+        - "step-ca-step-certificates.{{ cert.step_ca_namespace }}.svc.cluster.local"
+        - "ca.{{ cert.step_ca_namespace }}.svc.cluster.local"
+        - "ca.{{ common.clustername }}.local"
+        - "127.0.0.1"
+      db:
+        type: "badgerv2"
+        dataSource: "/home/step/db"
+      authority:
+        provisioners:
+          - type: "ACME"
+            name: "acme"
+            forceCN: true
+      root: "/home/step/certs/root_ca.crt"
+      crt: "/home/step/certs/intermediate_ca.crt"
+      key: "/home/step/secrets/intermediate_ca_key"
+      tls:
+        cipherSuites:
+          - "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"
+          - "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+        minVersion: 1.2
+        maxVersion: 1.3
+        renegotiation: false
+      logger:
+        format: "json"
+  delegate_to: localhost
+  become: false
+
+- name: Restart step-ca pod to apply new configuration
+  kubernetes.core.k8s:
+    state: absent
+    kind: Pod
+    name: step-ca-step-certificates-0
+    namespace: "{{ cert.step_ca_namespace }}"
+  delegate_to: localhost
+  become: false
+
+- name: Get step-ca root CA certificate from ConfigMap
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: step-ca-step-certificates-certs
+    namespace: "{{ cert.step_ca_namespace }}"
+    kubeconfig: "~/.kube/config"
+    validate_certs: false
+  register: ca_cert_result
+  delegate_to: localhost
+  become: false
+
+- name: Extract root CA certificate
+  ansible.builtin.set_fact:
+    ca_cert_output: "{{ ca_cert_result.resources[0].data['root_ca.crt'] }}"
+    ca_intermediate_output: "{{ ca_cert_result.resources[0].data['intermediate_ca.crt'] }}"
+  when: ca_cert_result.resources | length > 0 and 'root_ca.crt' in ca_cert_result.resources[0].data
+  failed_when: ca_cert_output is not defined or ca_cert_output == ""
+  delegate_to: localhost
+  become: false
+
+- name: Calculate CA fingerprint
+  ansible.builtin.command:
+    cmd: "openssl x509 -noout -fingerprint -sha256"
+    stdin: "{{ ca_cert_output }}"
+  register: ca_fingerprint_result
+  changed_when: false
+  failed_when: ca_fingerprint_result.rc != 0 or ca_fingerprint_result.stdout == ""
+  become: false
+
+- name: Extract fingerprint value
+  ansible.builtin.set_fact:
+    ca_fingerprint: "{{ ca_fingerprint_result.stdout.split('=')[1] | replace(':', '') }}"
+  become: false
+
+- name: Set fact for caBundle and fingerprint
+  ansible.builtin.set_fact:
+    ca_bundle: "{{ ca_cert_output | b64encode }}"
+    ca_fingerprint: "{{ ca_fingerprint }}"
+  become: false
+
+- name: Generate step ca config from template
+  delegate_to: localhost
+  ansible.builtin.template:
+    src: ../templates/clusterissuer.yaml.j2
+    dest: /tmp/clusterissuer.yaml
+  become: false
+
+- name: Debug caBundle and fingerprint
+  ansible.builtin.debug:
+    msg: |
+      ca_bundle: {{ ca_bundle | truncate(50, True, '...') }}
+      ca_fingerprint: {{ ca_fingerprint }}
+  become: false
+
+- name: Deploy ClusterIssuer for step-ca
+  delegate_to: localhost
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', '/tmp/clusterissuer.yaml') | from_yaml }}"
+  become: false
+
+- name: Wait for ClusterIssuer to be ready
+  delegate_to: localhost
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+    name: "{{ cert.step_ca_namespace }}-issuer"
+    kubeconfig: "~/.kube/config"  
+    validate_certs: false 
+  register: clusterissuer_status
+  until: "clusterissuer_status.resources | length > 0 and 'True' in (clusterissuer_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | list)"
+  retries: 30
+  delay: 10
+  become: false
+
+- name: Copy CA certificate to target hosts
+  connection: local
+  copy:
+    content: "{{ ca_cert_output }}"
+    dest: /usr/local/share/ca-certificates/root_ca.crt
+    mode: '0644'
+
+- name: Copy intermediate CA certificate to target hosts
+  connection: local
+  copy:
+    content: "{{ ca_intermediate_output }}"
+    dest: /usr/local/share/ca-certificates/intermediate_ca.crt
+    mode: '0644'
+
+- name: Update CA certificates (Debian/Ubuntu)
+  command: update-ca-certificates
+  when: ansible_os_family == "Debian"
+  connection: local
+  become: true
+  become_user: root

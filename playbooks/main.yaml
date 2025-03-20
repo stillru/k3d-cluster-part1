@@ -1,0 +1,90 @@
+# playbook/main.yaml
+---
+- name: Prepare k3d server for deployment (configure)
+  hosts: k3d_servers
+  tags: configure
+  tasks:
+    - name: Prepare host server
+      include_tasks: ./sections/prep_server.yaml
+      tags: configure
+
+    - name: Run parts installation
+      include_tasks: ./sections/deploy-helm.yaml
+
+- name: Deploy cluster
+  hosts: k3d_servers
+  tags: services
+  tasks:
+    - name: Run k3d installing
+      include_tasks: ./sections/deploy-k3d.yaml
+
+    - name: Register existing clusters
+      command: "k3d cluster list -o json"
+      register: cluster_list_output
+      changed_when: false
+
+    - name: Check if any clusters exist
+      set_fact:
+        has_clusters: "{{ (cluster_list_output.stdout | from_json | length) > 0 }}"
+
+    - name: Set fact with cluster name if clusters exist
+      set_fact:
+        running_cluster: "{{ cluster_list_output.stdout | from_json | json_query('[0].name') }}"
+      when: has_clusters == true
+
+    - name: Destroy and recreate cluster if k3d.recreate is true
+      when: k3d.recreate is true
+      block:
+        - name: Generate k3d config from template
+          ansible.builtin.template:
+            src: ../templates/k3d-config.yaml.j2
+            dest: "{{ k3d.config_path }}"
+            owner: "{{ ansible_user }}"
+            mode: '0644'
+
+        - name: Destroy cluster if it matches the configured name
+          when: 
+            - has_clusters and running_cluster == k3d.cluster_name 
+          command: k3d cluster delete {{ running_cluster }}
+          register: k3d_del_result
+          changed_when: k3d_del_result.rc == 0
+          
+        - name: Deploy k3d cluster from config
+          ansible.builtin.shell: 
+            cmd: k3d cluster create --config {{ k3d.config_path }} --kubeconfig-update-default --kubeconfig-switch-context --wait
+          register: k3d_create_result
+          changed_when: k3d_create_result.rc == 0
+
+        - name: Copy config to Ansible Controller
+          fetch:
+            src: ~/.kube/config
+            dest: ~/.kube/config
+            backup: yes
+            flat: yes
+          # Backs up existing config and enables local kubectl access
+        
+        - name: Wait 60 seconds for cluster stabilization
+          ansible.builtin.wait_for:
+            timeout: 60
+          delegate_to: localhost
+          # Ensures cluster is fully initialized
+
+- name: Deploy local path provisioner
+  hosts: k3d_servers
+  tags: localpath
+  tasks:
+    # Deploy local path provisioner
+    - name: Deploy local
+      include_tasks: ./sections/deploy-local-path.yaml
+
+- name: Deploy cert-manager
+  hosts: k3d_servers
+  tags: certmanager
+  tasks:
+    # Deploy cert-manager for certificate management
+    - name: Run cert-manager deploy
+      include_tasks: ./sections/deploy-certmanager.yaml
+
+    # Deploy Step CA for load balancing
+    - name: Run step ca deploy
+      include_tasks: ./sections/deploy-step-ca.yaml
